@@ -57,17 +57,19 @@ BOOT_DEVICE_MAP = {
     boot_devices.SAFE: 'hdsafe',
 }
 
+DEFAULT_BOOT_DEVICE = boot_devices.DISK
+
 
 def amtctrl(driver_info, command, special=''):
     """all interactions with the client object happen here.
     """
 
-    client = Client(driver_info['address'], driver_info['password'])
+    amt_client = Client(driver_info['address'], driver_info['password'])
 
     command_map = {
-        'on': client.power_on(),
-        'off': client.power_off(),
-        'power_state': client.power_status(),
+        'on': amt_client.power_on_with_device(special),
+        'off': amt_client.power_off(),
+        'power_state': amt_client.power_status(),
     }
 
     try:
@@ -97,7 +99,7 @@ def _get_power_state(driver_info):
 def _power_on(driver_info, device=''):
     """turn the power on
     """
-    response = amtctrl(driver_info, 'on')
+    response = amtctrl(driver_info, 'on', device)
 
     if response == '0':
         return states.POWER_ON
@@ -117,6 +119,8 @@ def _power_off(driver_info):
 
 
 def _parse_driver_info(node):
+    """this function seems to verify that the address and password exist in
+    the database for the node"""
     address = node.driver_info.get('amt_address')
     password = node.driver_info.get('amt_password')
     if not address or not password:
@@ -128,8 +132,10 @@ def _parse_driver_info(node):
 
 
 class AMTPower(base.PowerInterface):
+    """The power interface class"""
 
     def get_properties(self):
+        """don't know what this does"""
         return REQUIRED_PROPERTIES
 
     def validate(self, task):
@@ -140,11 +146,12 @@ class AMTPower(base.PowerInterface):
         return _get_power_state(driver_info)
 
     @task_manager.require_exclusive_lock
-    def set_power_state(self, task, pstate):
+    def set_power_state(self, task, power_state):
+
         driver_info = _parse_driver_info(task.node)
         driver_internal_info = task.node.driver_internal_info
 
-        if pstate == states.POWER_ON:
+        if power_state == states.POWER_ON:
             requested_dev = driver_internal_info.get('amt_boot_device')
             if requested_dev:
                 state = _power_on(driver_info,
@@ -155,16 +162,16 @@ class AMTPower(base.PowerInterface):
                     task.node.driver_internal_info = driver_internal_info
             else:
                 state = _power_on(driver_info)
-        elif pstate == states.POWER_OFF:
+        elif power_state == states.POWER_OFF:
             state = _power_off(driver_info)
         else:
             raise exception.InvalidParameterValue(
                 _("set_power_state called with "
-                  " invalid power state %s.") % pstate
+                  " invalid power state %s.") % power_state
             )
 
-        if state != pstate:
-            raise exception.PowerStateFailure(pstate=pstate)
+        if state != power_state:
+            raise exception.PowerStateFailure(pstate=power_state)
 
     @task_manager.require_exclusive_lock
     def reboot(self, task):
@@ -174,18 +181,23 @@ class AMTPower(base.PowerInterface):
 
 
 class AMTManagement(base.ManagementInterface):
+    """Management Interface class"""
 
     def get_properties(self):
+        """ get properties method"""
         return REQUIRED_PROPERTIES
 
     def validate(self, task):
+        """validates that you have enough information to manage a node"""
         _parse_driver_info(task.node)
 
     def get_supported_boot_devices(self):
+        """returns a list of supported boot devices"""
         return [boot_devices.PXE, boot_devices.DISK, boot_devices.CDROM,
                 boot_devices.BIOS, boot_devices.SAFE]
 
     def set_boot_device(self, task, device, persistent=False):
+        """set the boot device"""
         if device not in self.get_supported_boot_devices():
             raise exception.InvalidParameterValue(_(
                 "Invalid boot device %s specified.") % device)
@@ -199,7 +211,17 @@ class AMTManagement(base.ManagementInterface):
         task.node.save()
 
     def get_boot_device(self, task):
-        raise NotImplementedError()
+        """Because amt doesn't have a persistent boot device setting this just
+        checks for a driver info setting.. if missing it will return the
+        default which is "hd" """
+        driver_internal_info = task.node.driver_internal_info
+        device = driver_internal_info.get('amt_boot_device')
+        persistent = driver_internal_info.get('amt_boot_persistent')
+        if not device:
+            device = DEFAULT_BOOT_DEVICE
+            persistent = True
+        return {'boot_device': device,
+                'persistent': persistent}
 
     def get_sensors_data(self, task):
         raise NotImplementedError()
